@@ -28,6 +28,8 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 )
 
+const mongo8Image = "mongo:8.0"
+
 var (
 	opts = dktest.Options{PortRequired: true, ReadyFunc: isReady}
 	// Supported versions: https://www.mongodb.com/support-policy
@@ -35,7 +37,7 @@ var (
 		{ImageName: "mongo:5.0", Options: opts},
 		{ImageName: "mongo:6.0", Options: opts},
 		{ImageName: "mongo:7.0", Options: opts},
-		{ImageName: "mongo:8.0", Options: opts},
+		{ImageName: mongo8Image, Options: opts},
 	}
 )
 
@@ -74,6 +76,16 @@ func isReady(ctx context.Context, c dktest.ContainerInfo) bool {
 }
 
 func Test(t *testing.T) {
+	if kernel, err := dockerKernelVersion(context.Background()); err != nil {
+		t.Log("Could not read the Docker host's kernel version:", err)
+	} else {
+		var skipped []string
+		specs, skipped = specsForKernel(specs, kernel)
+		for _, name := range skipped {
+			t.Logf("Skipping %v: MongoDB 8.0 refuses to start on kernel %v, see https://jira.mongodb.org/browse/SERVER-121912", name, kernel)
+		}
+	}
+
 	t.Run("test", test)
 	t.Run("testMigrate", testMigrate)
 	t.Run("testWithAuth", testWithAuth)
