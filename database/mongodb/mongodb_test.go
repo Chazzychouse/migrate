@@ -17,6 +17,7 @@ import (
 
 import (
 	"github.com/dhui/dktest"
+	"github.com/moby/moby/client"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -28,8 +29,6 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 )
 
-const mongo8Image = "mongo:8.0"
-
 var (
 	opts = dktest.Options{PortRequired: true, ReadyFunc: isReady}
 	// Supported versions: https://www.mongodb.com/support-policy
@@ -37,7 +36,7 @@ var (
 		{ImageName: "mongo:5.0", Options: opts},
 		{ImageName: "mongo:6.0", Options: opts},
 		{ImageName: "mongo:7.0", Options: opts},
-		{ImageName: mongo8Image, Options: opts},
+		{ImageName: "mongo:8.0", Options: opts},
 	}
 )
 
@@ -75,15 +74,52 @@ func isReady(ctx context.Context, c dktest.ContainerInfo) bool {
 	return true
 }
 
+// mongod 8.0 exits at startup on kernels 6.19 to 7.0.13: https://jira.mongodb.org/browse/SERVER-125742
+func mongo8RefusesKernel(release string) bool {
+	var major, minor, patch int
+	if _, err := fmt.Sscanf(release, "%d.%d.%d", &major, &minor, &patch); err != nil {
+		return false
+	}
+	switch major {
+	case 6:
+		return minor >= 19
+	case 7:
+		return minor == 0 && patch < 14
+	}
+	return false
+}
+
+// dockerKernelVersion returns the kernel of the Docker host, which the containers run on.
+func dockerKernelVersion(ctx context.Context) (release string, retErr error) {
+	dc, err := client.New(client.FromEnv, client.WithAPIVersion("1.41"))
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if err := dc.Close(); err != nil && retErr == nil {
+			retErr = fmt.Errorf("error closing Docker client: %w", err)
+		}
+	}()
+	info, err := dc.Info(ctx, client.InfoOptions{})
+	if err != nil {
+		return "", err
+	}
+	return info.Info.KernelVersion, nil
+}
+
 func Test(t *testing.T) {
 	if kernel, err := dockerKernelVersion(context.Background()); err != nil {
 		t.Log("Could not read the Docker host's kernel version:", err)
-	} else {
-		var skipped []string
-		specs, skipped = specsForKernel(specs, kernel)
-		for _, name := range skipped {
-			t.Logf("Skipping %v: MongoDB 8.0 refuses to start on kernel %v, see https://jira.mongodb.org/browse/SERVER-121912", name, kernel)
+	} else if mongo8RefusesKernel(kernel) {
+		kept := make([]dktesting.ContainerSpec, 0, len(specs))
+		for _, spec := range specs {
+			if spec.ImageName == "mongo:8.0" {
+				t.Logf("Skipping %v: MongoDB 8.0 refuses to start on kernel %v, see https://jira.mongodb.org/browse/SERVER-121912", spec.ImageName, kernel)
+				continue
+			}
+			kept = append(kept, spec)
 		}
+		specs = kept
 	}
 
 	t.Run("test", test)
@@ -434,4 +470,30 @@ func waitForReplicaInit(client *mongo.Client) error {
 		}
 	}
 
+}
+
+func TestMongo8RefusesKernel(t *testing.T) {
+	testcases := []struct {
+		release string
+		refuses bool
+	}{
+		{"6.8.0-1070-azure", false},
+		{"6.17.0-1022-azure", false},
+		{"6.19.0", true},
+		{"6.19.8-arch1-1", true},
+		{"7.0.0-1017-azure", true},
+		{"7.0.13", true},
+		{"7.0.14", false},
+		{"7.1.0", false},
+		{"7.2.8-9-omarchy", false},
+		{"not-a-kernel", false},
+	}
+
+	for _, tcase := range testcases {
+		t.Run(tcase.release, func(t *testing.T) {
+			if got := mongo8RefusesKernel(tcase.release); got != tcase.refuses {
+				t.Errorf("mongo8RefusesKernel(%q) = %v, want %v", tcase.release, got, tcase.refuses)
+			}
+		})
+	}
 }
