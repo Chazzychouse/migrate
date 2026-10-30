@@ -17,7 +17,6 @@ import (
 
 import (
 	"github.com/dhui/dktest"
-	"github.com/moby/moby/client"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -89,26 +88,8 @@ func mongo8RefusesKernel(release string) bool {
 	return false
 }
 
-// dockerKernelVersion returns the kernel of the Docker host, which the containers run on.
-func dockerKernelVersion(ctx context.Context) (release string, retErr error) {
-	dc, err := client.New(client.FromEnv, client.WithAPIVersion("1.41"))
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		if err := dc.Close(); err != nil && retErr == nil {
-			retErr = fmt.Errorf("error closing Docker client: %w", err)
-		}
-	}()
-	info, err := dc.Info(ctx, client.InfoOptions{})
-	if err != nil {
-		return "", err
-	}
-	return info.Info.KernelVersion, nil
-}
-
 func Test(t *testing.T) {
-	if kernel, err := dockerKernelVersion(context.Background()); err != nil {
+	if kernel, err := dktesting.KernelVersion(); err != nil {
 		t.Log("Could not read the Docker host's kernel version:", err)
 	} else if mongo8RefusesKernel(kernel) {
 		kept := make([]dktesting.ContainerSpec, 0, len(specs))

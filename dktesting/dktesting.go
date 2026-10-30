@@ -62,3 +62,23 @@ func ParallelTest(t *testing.T, specs []ContainerSpec,
 		}
 	}
 }
+
+// KernelVersion returns the kernel release of the Docker host the containers run on
+func KernelVersion() (release string, retErr error) {
+	dc, err := client.New(client.FromEnv, client.WithAPIVersion("1.41"))
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if err := dc.Close(); err != nil && retErr == nil {
+			retErr = fmt.Errorf("error closing Docker client: %w", err)
+		}
+	}()
+	ctx, timeoutCancelFunc := context.WithTimeout(context.Background(), dktest.DefaultTimeout)
+	defer timeoutCancelFunc()
+	info, err := dc.Info(ctx, client.InfoOptions{})
+	if err != nil {
+		return "", err
+	}
+	return info.Info.KernelVersion, nil
+}
